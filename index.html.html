@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>淘宝问大家 AI赋能版演示</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+    <style>
+        /* 基础设置 */
+        body { background-color: #1a1a1a; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; overflow: hidden; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 淘宝橙视觉体系 */
+        .tb-gradient { background: linear-gradient(90deg, #ff9000 0%, #ff5000 100%); }
+        .tb-text-gradient { 
+            background: linear-gradient(90deg, #ff9000 0%, #ff5000 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        /* 动画：AI呼吸灯 */
+        @keyframes pulse-orange {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.02); }
+        }
+        .animate-pulse-fast { animation: pulse-orange 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+        /* 动画：页面切换 */
+        /* 容器需要相对定位，内容绝对定位以实现重叠过渡 */
+        .page-container { position: relative; width: 100%; height: 100%; overflow: hidden; }
+        
+        .slide-left-enter-active, .slide-left-leave-active,
+        .slide-right-enter-active, .slide-right-leave-active {
+            transition: all 0.3s ease-out;
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            background-color: #f3f4f6; /* 保持背景色防止透视 */
+        }
+
+        /* 前进：新页面从右边进，旧页面往左边退 */
+        .slide-left-enter-from { transform: translateX(100%); box-shadow: -5px 0 15px rgba(0,0,0,0.1); }
+        .slide-left-leave-to { transform: translateX(-20%); opacity: 0.8; }
+
+        /* 后退：新页面从左边浮现(其实是原位)，旧页面往右边滑出 */
+        .slide-right-enter-from { transform: translateX(-20%); opacity: 0.8; z-index: -1; }
+        .slide-right-leave-to { transform: translateX(100%); z-index: 10; box-shadow: -5px 0 15px rgba(0,0,0,0.1); }
+
+        /* 列表加载动画 */
+        .animate-fade-in-up { animation: fadeInUp 0.5s ease-out forwards; opacity: 0; transform: translateY(10px); }
+        @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
+        
+        /* 解决iOS底部安全区 */
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="relative max-w-md mx-auto bg-gray-100 h-screen overflow-hidden shadow-2xl">
+        
+        <!-- 页面切换容器 -->
+        <div class="page-container">
+            <transition :name="transitionName">
+                <component :is="currentViewComponent" 
+                           v-bind="currentProps" 
+                           @navigate="navigate" 
+                           @toast="showToast"
+                           :key="currentView">
+                </component>
+            </transition>
+        </div>
+
+        <!-- 全局 Toast -->
+        <transition name="fade">
+            <div v-if="toast.visible" class="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black/80 text-white px-5 py-4 rounded-xl text-sm z-[999] text-center w-4/5 max-w-xs backdrop-blur-md flex flex-col items-center gap-3 shadow-2xl">
+                <i v-if="toast.icon" :class="toast.icon" class="text-3xl text-orange-500"></i>
+                <span class="font-medium">{{ toast.message }}</span>
+            </div>
+        </transition>
+
+    </div>
+
+    <script>
+        const { createApp, ref, computed, reactive, onMounted } = Vue;
+
+        // =================================================================
+        // 组件 1: 商品详情页 (ProductHome)
+        // =================================================================
+        const ProductHome = {
+            template: `
+            <div class="flex flex-col h-full overflow-y-auto no-scrollbar relative bg-gray-100">
+                <!-- 顶部导航栏 (透明 -> 白色) -->
+                <div class="fixed top-0 w-full max-w-md z-40 p-3 flex justify-between items-center transition-all duration-300" 
+                     :class="scrollY > 50 ? 'bg-white shadow-sm text-black py-2' : 'text-white bg-gradient-to-b from-black/30 to-transparent'">
+                    <div class="w-8 h-8 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center cursor-pointer active:scale-90 transition-transform">
+                        <i class="fa-solid fa-chevron-left"></i>
+                    </div>
+                    <div class="flex gap-3">
+                        <div class="w-8 h-8 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center"><i class="fa-solid fa-share-nodes"></i></div>
+                        <div class="w-8 h-8 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center"><i class="fa-solid fa-cart-shopping"></i></div>
+                    </div>
+                </div>
+
+                <!-- 商品主图 -->
+                <div class="w-full h-[420px] relative shrink-0 bg-gray-200">
+                    <img src="https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80" 
+                         class="w-full h-full object-cover" alt="Nike Air Force 1">
+                    <div class="absolute bottom-4 right-4 bg-black/40 text-white text-xs px-3 py-1 rounded-full backdrop-blur-sm font-medium">1/6</div>
+                </div>
+
+                <!-- 价格与标题 -->
+                <div class="bg-white p-4 -mt-5 rounded-t-3xl relative z-10 mb-2 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
+                    <div class="flex items-baseline gap-1 mb-2">
+                        <span class="text-orange-600 font-bold text-xl">¥</span>
+                        <span class="text-orange-600 font-black text-4xl font-sans">799</span>
+                        <span class="ml-2 bg-orange-50 text-orange-600 text-[10px] px-1.5 py-0.5 rounded font-bold border border-orange-100">超核津贴</span>
+                    </div>
+                    <h1 class="text-gray-900 font-bold text-[17px] leading-snug mb-2 line-clamp-2">
+                        Nike耐克官方AIR FORCE 1 '07空军一号纯白低帮板鞋CW2288
+                    </h1>
+                    <div class="flex justify-between text-gray-400 text-xs mt-3 pb-2 border-b border-gray-50">
+                        <span>推荐指数 4.9 ★</span>
+                        <span>月销 1万+</span>
+                        <span>广东广州</span>
+                    </div>
+                    
+                    <!-- 优惠/服务 -->
+                    <div class="mt-3 space-y-3" @click="$emit('toast', '优惠券领取成功', 'fa-solid fa-ticket')">
+                        <div class="flex items-center gap-3">
+                            <span class="text-gray-900 font-bold text-xs w-8">优惠</span>
+                            <div class="flex gap-2 flex-1 overflow-hidden">
+                                <span class="bg-red-50 text-red-500 border border-red-100 text-[10px] px-2 py-0.5 rounded relative">
+                                    <span class="absolute -left-1 top-1/2 -mt-1 w-2 h-2 bg-white rounded-full"></span>
+                                    满700减50
+                                    <span class="absolute -right-1 top-1/2 -mt-1 w-2 h-2 bg-white rounded-full"></span>
+                                </span>
+                            </div>
+                            <i class="fa-solid fa-angle-right ml-auto text-gray-300 text-xs"></i>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-gray-900 font-bold text-xs w-8">保障</span>
+                            <div class="flex gap-3 text-xs text-gray-500">
+                                <span>退货运费险</span>
+                                <span>正品保证</span>
+                                <span>假一赔四</span>
+                            </div>
+                            <i class="fa-solid fa-angle-right ml-auto text-gray-300 text-xs"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ★★★ 核心交互：问大家入口 ★★★ -->
+                <div class="bg-white rounded-2xl mx-2 mb-3 p-3 shadow-sm cursor-pointer active:bg-gray-50 transition-colors duration-200"
+                     @click="$emit('navigate', 'AskEveryone')">
+                    
+                    <div class="flex justify-between items-center mb-3 px-1">
+                        <div class="flex items-baseline gap-2">
+                            <h2 class="font-bold text-base text-gray-900">问大家</h2>
+                            <span class="text-xs text-gray-400">(3245)</span>
+                        </div>
+                        <div class="text-orange-500 text-xs flex items-center gap-1 font-medium">
+                            查看全部 <i class="fa-solid fa-chevron-right text-[10px]"></i>
+                        </div>
+                    </div>
+
+                    <!-- AI 动态分析框 -->
+                    <div class="relative bg-orange-50/50 rounded-xl p-3 border border-orange-100/60 overflow-hidden">
+                        <!-- 背景光晕装饰 -->
+                        <div class="absolute -right-4 -top-4 w-20 h-20 bg-orange-200/20 rounded-full blur-xl"></div>
+
+                        <!-- 状态 A: 模拟 AI 实时计算 -->
+                        <div v-if="isAnalyzing" class="flex items-center justify-center py-1 gap-2 text-orange-600 animate-pulse-fast">
+                            <i class="fa-solid fa-circle-notch fa-spin text-sm"></i>
+                            <span class="text-sm font-bold">AI正在读取3000+条反馈...</span>
+                        </div>
+
+                        <!-- 状态 B: AI 分析结果 (钩子文案) -->
+                        <div v-else class="flex items-start gap-3 animate-fade-in-up">
+                            <div class="shrink-0 mt-0.5 w-6 h-6 bg-gradient-to-br from-orange-400 to-red-500 rounded-full flex items-center justify-center text-white shadow-md ring-2 ring-white">
+                                <i class="fa-solid fa-robot text-[10px]"></i>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-[13px] text-gray-800 font-medium leading-relaxed">
+                                    <span class="text-orange-600 font-black">AI省流：</span>
+                                    98%用户反馈<span class="bg-orange-100 px-1 mx-0.5 rounded text-orange-700 font-bold">偏大半码</span>，鞋头易出折痕，建议搭配<span class="border-b border-orange-300 border-dashed">护盾</span>使用。
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 评价预览 (填充页面长度) -->
+                <div class="bg-white p-4 rounded-2xl mx-2 mb-3">
+                     <div class="flex justify-between items-center mb-3">
+                        <h2 class="font-bold text-base text-gray-900">评价 (2万+)</h2>
+                        <div class="text-orange-500 text-xs">查看全部 <i class="fa-solid fa-chevron-right text-[10px]"></i></div>
+                    </div>
+                    <div class="flex gap-2 overflow-x-auto no-scrollbar mb-4">
+                        <span class="bg-orange-50 text-gray-700 text-xs px-3 py-1.5 rounded-full whitespace-nowrap">质量很好 (1023)</span>
+                        <span class="bg-gray-100 text-gray-700 text-xs px-3 py-1.5 rounded-full whitespace-nowrap">上脚超酷 (820)</span>
+                        <span class="bg-gray-100 text-gray-700 text-xs px-3 py-1.5 rounded-full whitespace-nowrap">有点磨脚 (45)</span>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="flex items-start gap-3">
+                            <div class="w-8 h-8 rounded-full bg-gray-200 overflow-hidden"><img src="https://randomuser.me/api/portraits/women/44.jpg" class="w-full h-full"></div>
+                            <div class="flex-1 border-b border-gray-50 pb-3">
+                                <div class="text-gray-500 text-xs mb-1 flex justify-between"><span>t***1</span> <span class="text-gray-300">2023.10.24</span></div>
+                                <div class="text-gray-800 text-sm line-clamp-2 mb-2">真的偏大！听了问大家的建议买了小半码，非常合脚。</div>
+                                <div class="flex gap-2"><div class="w-20 h-20 bg-gray-100 rounded-lg overflow-hidden"><img src="https://images.unsplash.com/photo-1600185365926-3a2ce3cdb9eb?w=200" class="w-full h-full object-cover"></div></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 底部留白 (防止遮挡) -->
+                <div class="h-24 w-full"></div>
+            </div>
+
+            <!-- 底部固定操作栏 -->
+            <div class="absolute bottom-0 w-full bg-white border-t border-gray-100 px-2 py-2 pb-safe z-50 flex items-center gap-2">
+                <div class="flex gap-5 px-4 text-[10px] text-gray-500">
+                    <div class="flex flex-col items-center gap-0.5"><i class="fa-solid fa-shop text-lg"></i>店铺</div>
+                    <div class="flex flex-col items-center gap-0.5"><i class="fa-regular fa-comment-dots text-lg"></i>客服</div>
+                    <div class="flex flex-col items-center gap-0.5"><i class="fa-regular fa-star text-lg"></i>收藏</div>
+                </div>
+                <div class="flex-1 flex h-10 rounded-full overflow-hidden font-bold text-sm text-white shadow-lg shadow-orange-500/20 mx-2">
+                    <div class="flex-1 bg-gradient-to-r from-yellow-400 to-orange-400 flex items-center justify-center">加入购物车</div>
+                    <div class="flex-1 tb-gradient flex items-center justify-center">立即购买</div>
+                </div>
+            </div>
+            `,
+            data() { return { isAnalyzing: true, scrollY: 0 } },
+            mounted() {
+                setTimeout(() => { this.isAnalyzing = false; }, 1200);
+                const el = this.$el; // 获取根元素
+                if(el) {
+                    el.addEventListener('scroll', (e) => { this.scrollY = e.target.scrollTop; });
+                }
+            }
+        };
+
+        // =================================================================
+        // 组件 2: 问大家详情页 (AskEveryone)
+        // =================================================================
+        const AskEveryone = {
+            template: `
+            <div class="flex flex-col h-full bg-gray-50">
+                <!-- 顶部 Header -->
+                <div class="bg-white px-4 pt-safe pb-3 flex items-end gap-3 shadow-sm shrink-0 z-20 h-20">
+                    <i class="fa-solid fa-arrow-left text-gray-800 text-xl cursor-pointer p-2 -ml-2 -mb-2" 
+                       @click="$emit('navigate', 'ProductHome', 'back')"></i>
+                    <div class="flex-1 text-center pr-6 mb-0.5">
+                        <h2 class="font-bold text-lg">问大家</h2>
+                    </div>
+                    <i class="fa-solid fa-magnifying-glass text-gray-800 text-lg mb-1"></i>
+                </div>
+
+                <!-- 内容滚动区 -->
+                <div class="flex-1 overflow-y-auto no-scrollbar p-3 pb-24">
+                    
+                    <!-- ★★★ AI 智能摘要卡片 ★★★ -->
+                    <div class="bg-white rounded-2xl p-5 shadow-sm border border-orange-100 mb-5 relative overflow-hidden">
+                        <!-- 背景纹理 -->
+                        <div class="absolute top-0 right-0 w-32 h-32 bg-orange-50 rounded-bl-full opacity-50 pointer-events-none"></div>
+
+                        <div class="flex items-center justify-between mb-5 relative z-10">
+                            <div class="flex items-center gap-2">
+                                <div class="bg-gradient-to-r from-orange-500 to-red-500 text-white text-[10px] px-2 py-1 rounded-lg font-bold shadow-sm flex items-center gap-1">
+                                    <i class="fa-solid fa-wand-magic-sparkles"></i> AI 总结
+                                </div>
+                                <span class="text-xs text-gray-400">已分析 3245 条问答</span>
+                            </div>
+                            <div class="text-xs text-gray-300">更新于今日</div>
+                        </div>
+
+                        <div class="space-y-4 relative z-10">
+                            <!-- 总结点 1: 尺码 -->
+                            <div class="flex gap-3 group cursor-pointer" @click="filterType('size')">
+                                <div class="w-6 h-6 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center text-xs font-black shrink-0 mt-0.5 group-active:scale-90 transition-transform">1</div>
+                                <div class="flex-1">
+                                    <p class="text-sm font-bold text-gray-800 group-hover:text-orange-600 transition-colors">尺码明显偏大</p>
+                                    <p class="text-xs text-gray-500 mt-1 leading-relaxed">
+                                        数据占比 90% · 建议拍小半码，脚瘦拍小一码。
+                                        <span class="text-orange-500 underline ml-1">看相关问答 ></span>
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <div class="h-px bg-gray-50 w-full"></div>
+
+                            <!-- 总结点 2: 舒适度 -->
+                            <div class="flex gap-3 group">
+                                <div class="w-6 h-6 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center text-xs font-black shrink-0 mt-0.5">2</div>
+                                <div class="flex-1">
+                                    <p class="text-sm font-bold text-gray-800">舒适度高但透气一般</p>
+                                    <p class="text-xs text-gray-500 mt-1 leading-relaxed">
+                                        气垫底厚实增高，夏季穿着略闷热。
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="h-px bg-gray-50 w-full"></div>
+
+                            <!-- 总结点 3: 缺陷 -->
+                            <div class="flex gap-3 group cursor-pointer" @click="triggerSearch('防折痕鞋盾')">
+                                <div class="w-6 h-6 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center text-xs font-black shrink-0 mt-0.5">3</div>
+                                <div class="flex-1">
+                                    <p class="text-sm font-bold text-gray-800">通病：易折痕/易氧化</p>
+                                    <p class="text-xs text-gray-500 mt-1 leading-relaxed">
+                                        鞋头皮质较硬，建议搭配
+                                        <span class="inline-flex items-center gap-0.5 bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded border border-orange-100 font-medium">
+                                            <i class="fa-solid fa-magnifying-glass text-[10px]"></i> 防折痕鞋盾
+                                        </span>
+                                        使用。
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ★★★ 猜你想搜 (Action Tags) ★★★ -->
+                    <div class="mb-6 px-1">
+                        <div class="flex items-center gap-2 mb-3">
+                            <i class="fa-solid fa-lightbulb text-yellow-400"></i>
+                            <p class="text-xs text-gray-500 font-bold">AI 发现大家都在搜：</p>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button v-for="(tag, index) in aiTags" :key="index"
+                                    @click="triggerSearch(tag)"
+                                    class="group relative bg-white border border-gray-200 text-gray-600 px-3 py-2 rounded-full text-xs font-medium shadow-sm active:scale-95 transition-all overflow-hidden">
+                                <div class="absolute inset-0 bg-orange-50 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                                <div class="relative flex items-center gap-1.5">
+                                    <span>{{ tag }}</span>
+                                    <i class="fa-solid fa-arrow-right text-[10px] text-gray-300 group-hover:text-orange-500"></i>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Tab 筛选 -->
+                    <div class="sticky top-0 bg-gray-50 pt-2 pb-3 z-10 flex gap-2 overflow-x-auto no-scrollbar px-1">
+                        <button v-for="tab in tabs" :key="tab.id" 
+                            @click="currentTab = tab.id"
+                            :class="currentTab === tab.id ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 border border-gray-200'"
+                            class="px-4 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all shadow-sm">
+                            {{ tab.label }}
+                        </button>
+                    </div>
+
+                    <!-- 问答列表 -->
+                    <div class="space-y-3">
+                        <div v-for="(qa, idx) in filteredList" :key="idx" 
+                             class="bg-white p-4 rounded-xl shadow-sm animate-fade-in-up"
+                             :style="{ animationDelay: idx * 100 + 'ms' }">
+                            
+                            <div class="flex items-start gap-2 mb-3">
+                                <span class="bg-orange-500 text-white text-[10px] w-4 h-4 flex items-center justify-center rounded font-bold mt-1 shadow-sm shadow-orange-200">问</span>
+                                <h3 class="text-sm text-gray-900 font-bold leading-snug flex-1">{{ qa.question }}</h3>
+                            </div>
+                            
+                            <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                <div class="flex items-start gap-2">
+                                    <span class="bg-green-500 text-white text-[10px] w-4 h-4 flex items-center justify-center rounded font-bold mt-1 shadow-sm shadow-green-200">答</span>
+                                    <p class="text-sm text-gray-600 leading-relaxed">{{ qa.answer }}</p>
+                                </div>
+                                <div class="mt-3 flex items-center justify-between text-[10px] text-gray-400 pl-6">
+                                    <span>{{ qa.date }} · {{ qa.userType }}</span>
+                                    <div class="flex items-center gap-3">
+                                        <span class="flex items-center gap-1"><i class="fa-regular fa-thumbs-up"></i> {{ qa.likes }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div v-if="qa.more > 0" class="mt-3 flex items-center justify-center text-xs text-blue-500 font-medium gap-1">
+                                查看全部 {{ qa.more }} 个回答 <i class="fa-solid fa-angle-down"></i>
+                            </div>
+                        </div>
+                        
+                        <div class="py-6 text-center text-gray-300 text-xs">
+                            - 到底了，去提个问吧 -
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 底部悬浮按钮 -->
+                <div class="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-30">
+                    <button class="tb-gradient text-white px-8 py-3 rounded-full font-bold text-sm shadow-lg shadow-orange-500/40 flex items-center gap-2 hover:scale-105 transition-transform"
+                            @click="$emit('toast', '提问功能建设中...', 'fa-solid fa-person-circle-question')">
+                        <i class="fa-regular fa-pen-to-square"></i>
+                        <span>我要提问</span>
+                    </button>
+                </div>
+            </div>
+            `,
+            data() {
+                return {
+                    currentTab: 'all',
+                    tabs: [
+                        { id: 'all', label: '全部' },
+                        { id: 'size', label: '尺码 (999+)' },
+                        { id: 'comfort', label: '舒适度 (542)' },
+                        { id: 'quality', label: '质量 (320)' }
+                    ],
+                    aiTags: ["查看防折痕鞋盾", "小白鞋清洗神器", "对比阿迪达斯贝壳头", "增高鞋垫推荐"],
+                    qaData: [
+                        { type: 'size', question: "平时穿37的，这个需要买小一码吗？纠结中...", answer: "必须买小！这鞋偏大出了名的。我平时37买的36.5还是有点掉跟，垫了个鞋垫才正好。建议你直接拍36。", date: "2小时前", userType: "已买用户", likes: 124, more: 12 },
+                        { type: 'comfort', question: "鞋底硬不硬？走久了累脚吗？", answer: "刚穿有点硬，俗称'板砖'，但是穿两天踩开气垫后就很舒服了。底很厚，增高效果明显，逛街无压力。", date: "昨天", userType: "LV4达人", likes: 89, more: 5 },
+                        { type: 'quality', question: "容易开胶吗？是不是正品？", answer: "在毒上鉴定过了是正品。耐克的做工懂的都懂，溢胶线头正常操作。目前穿了三个月没开胶，就是鞋头折痕明显。", date: "3天前", userType: "已买用户", likes: 230, more: 45 },
+                        { type: 'size', question: "脚宽的男生建议怎么买？", answer: "脚宽按正常码买就行，别买小。因为空军一号鞋头虽然宽，但是鞋面比较硬，买小了会挤脚趾。", date: "1周前", userType: "热心网友", likes: 15, more: 0 }
+                    ]
+                }
+            },
+            computed: {
+                filteredList() {
+                    if (this.currentTab === 'all') return this.qaData;
+                    return this.qaData.filter(i => i.type === this.currentTab);
+                }
+            },
+            methods: {
+                filterType(type) {
+                    this.currentTab = type;
+                    this.$emit('toast', `已筛选：${type === 'size' ? '尺码相关' : '全部'}`, 'fa-solid fa-filter');
+                },
+                triggerSearch(tag) {
+                    this.$emit('navigate', 'SearchResults', 'forward', { keyword: tag });
+                }
+            }
+        };
+
+        // =================================================================
+        // 组件 3: 搜索结果页 (SearchResults)
+        // =================================================================
+        const SearchResults = {
+            template: `
+            <div class="flex flex-col h-full bg-gray-100">
+                <!-- 搜索框 -->
+                <div class="bg-white p-2 pt-safe flex items-center gap-3 border-b border-gray-100 z-20 h-20 items-end pb-3">
+                    <i class="fa-solid fa-arrow-left text-gray-600 text-xl px-2 cursor-pointer" 
+                       @click="$emit('navigate', 'AskEveryone', 'back')"></i>
+                    <div class="flex-1 bg-gray-100 rounded-full px-4 py-1.5 flex items-center gap-2 mb-0.5">
+                        <i class="fa-solid fa-magnifying-glass text-gray-400 text-xs"></i>
+                        <input type="text" :value="keyword" class="bg-transparent border-none outline-none text-sm w-full text-gray-800 font-medium" readonly>
+                        <i class="fa-solid fa-circle-xmark text-gray-300"></i>
+                    </div>
+                    <span class="text-sm text-gray-800 font-bold mb-1.5">搜索</span>
+                </div>
+
+                <!-- 筛选条 -->
+                <div class="bg-white flex justify-between px-8 py-3 text-sm text-gray-600 shadow-sm z-10">
+                    <span class="font-bold text-orange-500">综合</span>
+                    <span>销量</span>
+                    <span>信用</span>
+                    <span class="flex items-center gap-1 border-l border-gray-200 pl-8">筛选 <i class="fa-solid fa-filter text-[10px]"></i></span>
+                </div>
+
+                <!-- 商品瀑布流 -->
+                <div class="flex-1 overflow-y-auto no-scrollbar p-2">
+                    <div class="grid grid-cols-2 gap-2">
+                        
+                        <!-- 结果 Item 1 -->
+                        <div class="bg-white rounded-lg overflow-hidden pb-2 animate-fade-in-up" style="animation-delay: 0ms">
+                            <div class="h-40 bg-gray-200 relative">
+                                <img src="https://images.unsplash.com/photo-1560769629-975ec94e6a86?w=400" class="w-full h-full object-cover">
+                            </div>
+                            <div class="p-2">
+                                <h3 class="text-[13px] text-gray-800 leading-snug line-clamp-2 mb-1 h-9">
+                                    <span class="text-orange-500 border border-orange-500 rounded-[2px] px-0.5 mr-1 text-[10px] align-middle">天猫</span>
+                                    {{ keyword }} 专用修复神器 运动鞋护理
+                                </h3>
+                                <div class="flex items-end gap-1 mb-1">
+                                    <span class="text-xs text-orange-600 font-bold">¥</span>
+                                    <span class="text-lg text-orange-600 font-bold">19.9</span>
+                                    <span class="text-[10px] text-gray-400 ml-1">1.2万人付款</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 结果 Item 2 -->
+                        <div class="bg-white rounded-lg overflow-hidden pb-2 animate-fade-in-up" style="animation-delay: 100ms">
+                            <div class="h-40 bg-gray-200 relative">
+                                <img src="https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=400" class="w-full h-full object-cover">
+                            </div>
+                            <div class="p-2">
+                                <h3 class="text-[13px] text-gray-800 leading-snug line-clamp-2 mb-1 h-9">
+                                    <span class="bg-orange-500 text-white rounded-[2px] px-0.5 mr-1 text-[10px] align-middle">热销</span>
+                                    AJ/空军一号 {{ keyword }} 
+                                </h3>
+                                <div class="flex items-end gap-1 mb-1">
+                                    <span class="text-xs text-orange-600 font-bold">¥</span>
+                                    <span class="text-lg text-orange-600 font-bold">9.8</span>
+                                    <span class="text-[10px] text-gray-400 ml-1">5000+付款</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 结果 Item 3 -->
+                        <div class="bg-white rounded-lg overflow-hidden pb-2 animate-fade-in-up" style="animation-delay: 200ms">
+                            <div class="h-40 bg-gray-200 relative">
+                                <img src="https://images.unsplash.com/photo-1595341888016-a392ef81b7de?w=400" class="w-full h-full object-cover">
+                            </div>
+                            <div class="p-2">
+                                <h3 class="text-[13px] text-gray-800 leading-snug line-clamp-2 mb-1 h-9">
+                                    进口球鞋清洗剂 {{ keyword }} 去黄增白
+                                </h3>
+                                <div class="flex items-end gap-1 mb-1">
+                                    <span class="text-xs text-orange-600 font-bold">¥</span>
+                                    <span class="text-lg text-orange-600 font-bold">39.9</span>
+                                    <span class="text-[10px] text-gray-400 ml-1">200+付款</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 结果 Item 4 -->
+                        <div class="bg-white rounded-lg overflow-hidden pb-2 animate-fade-in-up" style="animation-delay: 300ms">
+                            <div class="h-40 bg-gray-200 relative">
+                                <img src="https://images.unsplash.com/photo-1605034313761-73ea4a0cfbf3?w=400" class="w-full h-full object-cover">
+                            </div>
+                            <div class="p-2">
+                                <h3 class="text-[13px] text-gray-800 leading-snug line-clamp-2 mb-1 h-9">
+                                    Sneaker Shield 2代 {{ keyword }}
+                                </h3>
+                                <div class="flex items-end gap-1 mb-1">
+                                    <span class="text-xs text-orange-600 font-bold">¥</span>
+                                    <span class="text-lg text-orange-600 font-bold">15.0</span>
+                                    <span class="text-[10px] text-gray-400 ml-1">800+付款</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- 成功提示 -->
+                    <div class="mt-6 mx-4 p-4 bg-green-50 border border-green-100 rounded-xl text-center animate-fade-in-up" style="animation-delay: 500ms">
+                        <div class="w-10 h-10 bg-green-500 rounded-full text-white flex items-center justify-center mx-auto mb-2 shadow-green-200 shadow-lg">
+                            <i class="fa-solid fa-check text-xl"></i>
+                        </div>
+                        <p class="text-green-800 font-bold text-sm">Demo 演示完成</p>
+                        <p class="text-xs text-green-600 mt-1">用户路径闭环：发现痛点(折痕) -> 点击AI推荐 -> 跳转搜索解决商品</p>
+                    </div>
+                    
+                    <div class="h-10"></div>
+                </div>
+            </div>
+            `,
+            props: ['keyword']
+        };
+
+        // =================================================================
+        // 主应用实例
+        // =================================================================
+        const app = createApp({
+            setup() {
+                const currentView = ref('ProductHome');
+                const direction = ref('forward');
+                const viewProps = ref({});
+                
+                const toast = reactive({
+                    visible: false,
+                    message: '',
+                    icon: ''
+                });
+
+                // 动态组件计算
+                const currentViewComponent = computed(() => {
+                    const views = {
+                        'ProductHome': ProductHome,
+                        'AskEveryone': AskEveryone,
+                        'SearchResults': SearchResults
+                    };
+                    return views[currentView.value];
+                });
+
+                // 过渡动画方向
+                const transitionName = computed(() => {
+                    return direction.value === 'forward' ? 'slide-left' : 'slide-right';
+                });
+
+                // 导航方法
+                const navigate = (viewName, dir = 'forward', props = {}) => {
+                    direction.value = dir;
+                    viewProps.value = props;
+                    currentView.value = viewName;
+                };
+
+                // Toast 方法
+                const showToast = (msg, icon = '') => {
+                    toast.message = msg;
+                    toast.icon = icon;
+                    toast.visible = true;
+                    setTimeout(() => {
+                        toast.visible = false;
+                    }, 2000);
+                };
+
+                return {
+                    currentView,
+                    currentViewComponent,
+                    currentProps: viewProps,
+                    transitionName,
+                    navigate,
+                    toast,
+                    showToast
+                };
+            }
+        });
+
+        app.mount('#app');
+    </script>
+</body>
+</html>
+```
